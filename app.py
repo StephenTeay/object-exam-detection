@@ -1,12 +1,12 @@
-import os
 import streamlit as st
-import cv2
+import av
 import numpy as np
 import torch
 import pandas as pd
 from datetime import datetime, timedelta
 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
 from PIL import Image
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
 # Constants
 LOG_INTERVAL = 300  # 5 minutes in seconds
@@ -15,8 +15,8 @@ LOG_FILE = "object_logs.txt"
 # Initialize session state
 if 'last_log_time' not in st.session_state:
     st.session_state.last_log_time = datetime.now()
-if 'processing' not in st.session_state:
-    st.session_state.processing = False
+if 'label_stats' not in st.session_state:
+    st.session_state.label_stats = {}
 
 # Model setup
 weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
@@ -32,103 +32,94 @@ def load_model():
 model = load_model()
 
 def process_frame(frame):
-    img = Image.fromarray(frame)
+    img = frame.to_image()
     img_processed = img_preprocess(img)
     prediction = model(img_processed.unsqueeze(0))[0]
     return {
         "labels": [categories[label] for label in prediction["labels"]],
-        "boxes": prediction["boxes"].detach().cpu().numpy(),
         "scores": prediction["scores"].detach().cpu().numpy()
     }
 
-def log_predictions(results):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"\n[{timestamp}]\n")
-        f.write("Label\t\tCount\tPercentage\n")
-        f.write("-"*40 + "\n")
-        for res in results:
-            f.write(f"{res['Label']}\t\t{res['Count']}\t{res['Percentage']:.1f}%\n")
+def log_predictions():
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total_score = sum(v["total_score"] for v in st.session_state.label_stats.values())
+        
+        with open(LOG_FILE, "a") as f:
+            f.write(f"\n[{timestamp}]\n")
+            f.write("Label\t\tCount\tPercentage\n")
+            f.write("-"*40 + "\n")
+            for label, data in st.session_state.label_stats.items():
+                percentage = (data["total_score"] / total_score * 100) if total_score > 0 else 0
+                f.write(f"{label.title()}\t\t{data['count']}\t{percentage:.1f}%\n")
+        
+        st.session_state.label_stats = {}
+        st.success("Predictions logged successfully!")
+    except Exception as e:
+        st.error(f"Logging failed: {str(e)}")
 
 # Streamlit UI
-st.title("Cloud Video Analyzer ☁️🎥")
+st.title("Real-Time Object Detector 🎥")
 
-# Video capture component
-video_html = """
-<div id="video-container">
-  <video id="video" width="640" height="480" autoplay></video>
-  <canvas id="canvas" style="display:none;"></canvas>
-</div>
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-
-if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-  navigator.mediaDevices.getUserMedia({ video: true })
-    .then(stream => video.srcObject = stream)
-    .catch(err => console.error('Error accessing camera:', err));
-}
-
-function captureFrame() {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
-  return canvas.toDataURL('image/jpeg', 0.8);
-}
-</script>
-"""
-st.components.v1.html(video_html, height=500)
-
-# Processing controls
-if st.button("Start Processing") and not st.session_state.processing:
-    st.session_state.processing = True
-    st.session_state.last_log_time = datetime.now()
-    label_stats = {}
-    
-    while st.session_state.processing:
-        # Capture frame from JS component
-        frame_data = st.components.v1.html(
-            "<script>window.parent.postMessage(captureFrame(), '*');</script>",
-            height=0,
-            width=0
-        )
+def video_frame_callback(frame):
+    try:
+        prediction = process_frame(frame)
         
-        if frame_data:
-            # Process frame
-            frame = np.frombuffer(frame_data.split(",")[1].encode(), np.uint8)
-            frame = cv2.imdecode(frame, cv2.IMREAD_COLOR)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Update statistics
+        for label, score in zip(prediction["labels"], prediction["scores"]):
+            if label not in st.session_state.label_stats:
+                st.session_state.label_stats[label] = {
+                    "count": 0,
+                    "total_score": 0.0
+                }
+            st.session_state.label_stats[label]["count"] += 1
+            st.session_state.label_stats[label]["total_score"] += score
+        
+        # Automatic logging
+        if (datetime.now() - st.session_state.last_log_time).seconds >= LOG_INTERVAL:
+            log_predictions()
+            st.session_state.last_log_time = datetime.now()
             
-            # Make prediction
-            prediction = process_frame(frame)
-            
-            # Update stats
-            for label, score in zip(prediction["labels"], prediction["scores"]):
-                if label not in label_stats:
-                    label_stats[label] = {"count": 0, "total_score": 0.0}
-                label_stats[label]["count"] += 1
-                label_stats[label]["total_score"] += score
-            
-            # Check logging interval
-            if (datetime.now() - st.session_state.last_log_time).seconds >= LOG_INTERVAL:
-                total_score = sum(v["total_score"] for v in label_stats.values())
-                results = [{
-                    "Label": label.title(),
-                    "Count": data["count"],
-                    "Percentage": (data["total_score"] / total_score * 100) if total_score > 0 else 0
-                } for label, data in label_stats.items()]
-                
-                log_predictions(results)
-                st.session_state.last_log_time = datetime.now()
-                label_stats = {}  # Reset stats after logging
+    except Exception as e:
+        st.error(f"Processing error: {str(e)}")
+    
+    return frame
 
-if st.button("Stop Processing"):
-    st.session_state.processing = False
+webrtc_streamer(
+    key="object-detector",
+    mode=WebRtcMode.SENDRECV,
+    video_frame_callback=video_frame_callback,
+    media_stream_constraints={"video": True, "audio": False},
+    async_processing=True
+)
 
-# Display logs
-if st.checkbox("Show Logs"):
+# Display current stats
+if st.session_state.label_stats:
+    st.subheader("Current Statistics")
+    stats = [{
+        "Label": label.title(),
+        "Count": data["count"],
+        "Percentage": f"{(data['total_score'] / sum(v['total_score'] for v in st.session_state.label_stats.values()) * 100:.1f}%"
+    } for label, data in st.session_state.label_stats.items()]
+    
+    st.table(pd.DataFrame(stats))
+
+# Manual log display
+if st.button("Show Logs"):
     try:
         with open(LOG_FILE, "r") as f:
             st.text(f.read())
     except FileNotFoundError:
         st.warning("No logs available yet")
+
+# Requirements (save as requirements.txt)
+"""
+streamlit==1.28.0
+torch==2.1.0
+torchvision==0.16.0
+numpy==1.26.0
+pandas==2.1.1
+Pillow==10.0.0
+streamlit-webrtc==0.47.1
+av==10.0.0
+"""
