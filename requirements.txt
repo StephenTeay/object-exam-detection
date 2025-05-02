@@ -1,8 +1,6 @@
-# 1. Create requirements.txt
+
 torch==2.0.1
 torchvision==0.15.2
 opencv-python-headless==4.7.0.72
 streamlit==1.24.0
 
-# 2. Push code to GitHub repo
-# 3. Sign in to streamlit.io → New App → Connect repo
