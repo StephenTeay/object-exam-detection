@@ -130,7 +130,7 @@ if st.session_state.cam_running:
     finally:
         cap.release()
         st.session_state.cam_running = False
-        st.experimental_rerun()
+        st.rerun()
 
 # Show log file
 if os.path.exists(LOG_FILE):
