@@ -100,7 +100,7 @@ if st.session_state.label_stats:
     stats = [{
         "Label": label.title(),
         "Count": data["count"],
-        "Percentage": f"{(data['total_score'] / sum(v['total_score'] for v in st.session_state.label_stats.values()) * 100:.1f}%"
+       "Percentage": f"{(data['total_score'] / sum(v['total_score'] for v in st.session_state.label_stats.values()) * 100):.1f}%"
     } for label, data in st.session_state.label_stats.items()]
     
     st.table(pd.DataFrame(stats))
