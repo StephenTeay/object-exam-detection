@@ -1,4 +1,3 @@
-import os
 import streamlit as st
 import av
 import numpy as np
@@ -44,14 +43,14 @@ def process_frame(frame):
 def log_predictions():
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        total_score = sum(v["total_score"] for v in st.session_state.label_stats.values())
+        total_score = sum(v["total_score"] for v in st.session_state.label_stats.values()) or 1  # Avoid division by zero
         
         with open(LOG_FILE, "a") as f:
             f.write(f"\n[{timestamp}]\n")
             f.write("Label\t\tCount\tPercentage\n")
             f.write("-"*40 + "\n")
             for label, data in st.session_state.label_stats.items():
-                percentage = (data["total_score"] / total_score * 100) if total_score > 0 else 0
+                percentage = (data["total_score"] / total_score * 100)
                 f.write(f"{label.title()}\t\t{data['count']}\t{percentage:.1f}%\n")
         
         st.session_state.label_stats = {}
@@ -74,7 +73,7 @@ def video_frame_callback(frame):
                     "total_score": 0.0
                 }
             st.session_state.label_stats[label]["count"] += 1
-            st.session_state.label_stats[label]["total_score"] += score
+            st.session_state.label_stats[label]["total_score"] += float(score)
         
         # Automatic logging
         if (datetime.now() - st.session_state.last_log_time).seconds >= LOG_INTERVAL:
@@ -86,7 +85,8 @@ def video_frame_callback(frame):
     
     return frame
 
-webrtc_streamer(
+# WebRTC video streamer
+ctx = webrtc_streamer(
     key="object-detector",
     mode=WebRtcMode.SENDRECV,
     video_frame_callback=video_frame_callback,
@@ -94,26 +94,36 @@ webrtc_streamer(
     async_processing=True
 )
 
-# Display current stats
+# Display current statistics
 if st.session_state.label_stats:
     st.subheader("Current Statistics")
-    stats = [{
-        "Label": label.title(),
-        "Count": data["count"],
-       "Percentage": f"{(data['total_score'] / sum(v['total_score'] for v in st.session_state.label_stats.values()) * 100):.1f}%"
-    } for label, data in st.session_state.label_stats.items()]
+    total_score = sum(v["total_score"] for v in st.session_state.label_stats.values()) or 1
+    stats = []
+    
+    for label, data in st.session_state.label_stats.items():
+        percentage = (data["total_score"] / total_score * 100)
+        stats.append({
+            "Label": label.title(),
+            "Count": data["count"],
+            "Confidence (%)": f"{percentage:.1f}%"
+        })
     
     st.table(pd.DataFrame(stats))
 
 # Manual log display
-if st.button("Show Logs"):
+if st.button("Show Log History"):
     try:
         with open(LOG_FILE, "r") as f:
             st.text(f.read())
     except FileNotFoundError:
         st.warning("No logs available yet")
 
-# Requirements (save as requirements.txt)
+# Add reset button
+if st.button("Reset Statistics"):
+    st.session_state.label_stats = {}
+    st.rerun()
+
+# Required packages (save as requirements.txt)
 """
 streamlit==1.28.0
 torch==2.1.0
